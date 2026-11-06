@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>timetrack</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <span class="brand" id="page-title">timetrack</span>
+  <div class="menu">
+    <button id="menu-btn" class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="Menü">☰</button>
+    <nav id="menu" class="menu-list" hidden>
+      <a href="#/">Stempeln</a>
+      <a href="#/kalender">Kalender</a>
+      <a href="#/jahre">Jahre &amp; Einstellungen</a>
+      <a href="#/export">Export &amp; Datensicherung</a>
+    </nav>
+  </div>
+</header>
+
+<main>
+  <!-- Hauptseite -->
+  <section id="view-main" class="view" hidden>
+    <div id="open-warning" class="banner warn" hidden></div>
+    <button id="toggle" class="toggle pause" type="button">
+      <span class="toggle-label">PAUSE</span>
+      <span class="toggle-sub" id="toggle-sub"></span>
+    </button>
+    <div class="stats">
+      <div class="stat"><div class="stat-label">Arbeitszeit heute</div><div class="stat-value" id="today-work">0h 00m</div></div>
+      <div class="stat"><div class="stat-label">Pausenzeit heute</div><div class="stat-value" id="today-pause">0h 00m</div></div>
+    </div>
+    <p class="hint" id="today-hint"></p>
+    <p class="hint">Überstundenkonto (bis gestern): <strong id="main-balance">–</strong> · Saldo heute: <strong id="main-today-delta">–</strong></p>
+  </section>
+
+  <!-- Kalender -->
+  <section id="view-calendar" class="view" hidden>
+    <div class="summary">
+      <div class="stat big"><div class="stat-label">Überstundenkonto (bis gestern)</div><div class="stat-value" id="cal-balance">–</div></div>
+      <div class="stat"><div class="stat-label" id="cal-vac-label">Resturlaub</div><div class="stat-value" id="cal-vacation">–</div></div>
+    </div>
+    <div class="month-nav">
+      <button id="prev-month" type="button" aria-label="Vorheriger Monat">‹</button>
+      <h2 id="month-title"></h2>
+      <button id="next-month" type="button" aria-label="Nächster Monat">›</button>
+      <button id="this-month" type="button" class="secondary">Heute</button>
+    </div>
+    <div class="calendar" id="calendar"></div>
+    <div class="legend">
+      <span><i class="sw c-red"></i>Arbeitszeit nicht beendet (letzter Eintrag „work“)</span>
+      <span><i class="sw c-orange"></i>Urlaub über Kontingent / Gleitzeittag oder Minusstunden bei negativem Konto</span>
+      <span><i class="sw c-yellow"></i>Zu wenig Pause eingetragen oder mehr als 9 h Arbeit</span>
+      <span><i class="sw c-grey"></i>Arbeitstag ohne Eintrag</span>
+      <span><i class="sw c-nf"></i>Wochenende / Feiertag</span>
+      <span class="legend-text">TU Urlaub · AU Krankheit · EGZ Gleitzeittag · NF Feiertag</span>
+    </div>
+    <div id="day-panel" class="card" hidden></div>
+  </section>
+
+  <!-- Jahre & Einstellungen -->
+  <section id="view-years" class="view" hidden>
+    <div class="card">
+      <h2>Einstellungen</h2>
+      <form id="settings-form" class="form-grid">
+        <label>Startdatum der Erfassung
+          <input type="date" name="start_date" required>
+        </label>
+        <label>Startsaldo Überstunden (z. B. +12:30 oder -3:15)
+          <input type="text" name="start_balance" pattern="[+\-−]?\d+(:\d{1,2})?" required>
+        </label>
+        <label>Feiertage (Bundesland)
+          <input type="text" name="state" disabled>
+        </label>
+        <div><button type="submit">Speichern</button></div>
+      </form>
+      <p class="hint">Vor dem Startdatum fließen keine Tage ins Überstundenkonto ein. Aktuelles Konto: <strong id="years-balance">–</strong></p>
+    </div>
+    <div class="card">
+      <h2>Kalenderjahre</h2>
+      <p class="hint">Resturlaub wird automatisch ins Folgejahr übertragen. Die Wochenarbeitszeit gilt Montag bis Freitag zu je einem Fünftel.</p>
+      <div class="table-wrap">
+        <table class="years">
+          <thead><tr>
+            <th>Jahr</th><th>Urlaubstage</th><th>Wochenstunden</th><th>Übertrag</th>
+            <th>Verfügbar</th><th>Genommen</th><th>Geplant</th><th>Rest</th><th>Überstunden im Jahr</th><th></th>
+          </tr></thead>
+          <tbody id="years-body"></tbody>
+        </table>
+      </div>
+      <form id="add-year" class="inline-form">
+        <input type="number" name="year" min="1901" max="2999" placeholder="Jahr" required>
+        <button type="submit">Jahr hinzufügen</button>
+      </form>
+    </div>
+  </section>
+
+  <!-- Export & Datensicherung -->
+  <section id="view-export" class="view" hidden>
+    <div class="card">
+      <h2>Excel-Export</h2>
+      <p>Exportiert die letzten zwei Jahre taggenau (<span id="export-range"></span>) als Excel-Datei:
+        ein Reiter pro Kalendermonat mit Arbeits- und Pausenzeiten, Urlaub, Krankschreibung, Gleitzeittagen
+        und Feiertagen sowie einer Monatsstatistik. Monate ganz ohne Einträge werden weggelassen.</p>
+      <a class="button" href="/api/export/excel" download>Excel-Datei herunterladen</a>
+    </div>
+    <div class="card">
+      <h2>Datensicherung</h2>
+      <p>Speichert den kompletten Datenbankinhalt (Zeitstempel, Tagesarten, Jahre, Einstellungen) in einer Datei.</p>
+      <a class="button" href="/api/backup" download>Datensicherung herunterladen</a>
+    </div>
+    <div class="card danger-zone">
+      <h2>Datensicherung einspielen</h2>
+      <p><strong>Achtung:</strong> Beim Einspielen werden <strong>alle vorhandenen Daten gelöscht</strong> und durch den Inhalt der Datei ersetzt.</p>
+      <form id="import-form" class="inline-form">
+        <input type="file" name="file" accept=".json,application/json" required>
+        <button type="submit" class="danger">Einspielen</button>
+      </form>
+    </div>
+  </section>
+</main>
+<div id="toast" class="toast" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
