@@ -55,7 +55,7 @@
       <span><i class="sw c-yellow"></i>Zu wenig Pause eingetragen oder mehr als 9 h Arbeit</span>
       <span><i class="sw c-grey"></i>Arbeitstag ohne Eintrag</span>
       <span><i class="sw c-nf"></i>Wochenende / Feiertag</span>
-      <span class="legend-text">TU Urlaub · AU Krankheit · EGZ Gleitzeittag · NF Feiertag</span>
+      <span class="legend-text">TU Urlaub · AU Krankheit · EGZ Gleitzeittag · NF Feiertag · <b style="color:var(--accent)">*</b> Kommentar vorhanden</span>
     </div>
     <div id="day-panel" class="card" hidden></div>
   </section>
@@ -102,8 +102,8 @@
     <div class="card">
       <h2>Excel-Export</h2>
       <p>Exportiert die letzten zwei Jahre taggenau (<span id="export-range"></span>) als Excel-Datei:
-        ein Reiter pro Kalendermonat mit Arbeits- und Pausenzeiten, Urlaub, Krankschreibung, Gleitzeittagen
-        und Feiertagen sowie einer Monatsstatistik. Monate ganz ohne Einträge werden weggelassen.</p>
+        ein Reiter pro Kalendermonat mit Gesamtarbeits- und Gesamtpausenzeit je Tag, Urlaub, Krankschreibung,
+        Gleitzeittagen, Feiertagen und Kommentaren sowie einer Monatsstatistik. Monate ganz ohne Einträge werden weggelassen.</p>
       <a class="button" href="/api/export/excel" download>Excel-Datei herunterladen</a>
     </div>
     <div class="card">

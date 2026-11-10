@@ -18,16 +18,19 @@ import threading
 import time
 from datetime import date, datetime
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3  # v2: Urlaubstage/Wochenstunden als Dezimalzahlen, v3: Tageskommentare
 BACKUP_FORMAT = "timetrack-backup"
+BACKUP_FORMATS_ACCEPTED = (BACKUP_FORMAT, "timeapp-backup")  # auch Sicherungen der alten timeapp
+OPTIONAL_BACKUP_TABLES = ("day_notes",)  # fehlen in Sicherungen vor v3
 
 # Tabellen und Spalten der Datensicherung, mit Umwandlung aus JSON
 BACKUP_TABLES = {
     "settings": {"name": str, "value": str},
-    "years": {"year": int, "vacation_days": float, "weekly_minutes": int, "holidays_done": int},
+    "years": {"year": int, "vacation_days": float, "weekly_minutes": float, "holidays_done": int},
     "day_marks": {"day": date.fromisoformat, "kind": str, "note": lambda v: None if v is None else str(v),
                   "auto": int},
     "stamps": {"id": int, "ts": datetime.fromisoformat, "kind": str},
+    "day_notes": {"day": date.fromisoformat, "note": str},
 }
 
 MYSQL_SCHEMA = [
@@ -47,10 +50,14 @@ MYSQL_SCHEMA = [
         note VARCHAR(100) NULL,
         auto TINYINT(1) NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+    """CREATE TABLE IF NOT EXISTS day_notes (
+        day DATE NOT NULL PRIMARY KEY,
+        note TEXT NOT NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     """CREATE TABLE IF NOT EXISTS years (
         year SMALLINT UNSIGNED NOT NULL PRIMARY KEY,
-        vacation_days DECIMAL(4,1) NOT NULL,
-        weekly_minutes SMALLINT UNSIGNED NOT NULL,
+        vacation_days DECIMAL(5,2) NOT NULL,
+        weekly_minutes DECIMAL(7,2) NOT NULL,
         holidays_done TINYINT(1) NOT NULL DEFAULT 0
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
 ]
@@ -67,10 +74,11 @@ SQLITE_SCHEMA = [
         kind TEXT NOT NULL CHECK (kind IN ('TU','AU','EGZ','NF')),
         note TEXT NULL,
         auto INTEGER NOT NULL DEFAULT 0)""",
+    "CREATE TABLE IF NOT EXISTS day_notes (day DATE PRIMARY KEY, note TEXT NOT NULL)",
     """CREATE TABLE IF NOT EXISTS years (
         year INTEGER PRIMARY KEY,
         vacation_days REAL NOT NULL,
-        weekly_minutes INTEGER NOT NULL,
+        weekly_minutes REAL NOT NULL,
         holidays_done INTEGER NOT NULL DEFAULT 0)""",
 ]
 
@@ -178,7 +186,12 @@ class Database:
     def init_schema(self):
         for stmt in (SQLITE_SCHEMA if self.dialect == "sqlite" else MYSQL_SCHEMA):
             self.execute(stmt)
-        if self.get_setting("schema_version") is None:
+        version = self.get_setting("schema_version")
+        if version is not None and int(version) < 2 and self.dialect == "mysql":
+            # v1 -> v2: Dezimalstellen für Urlaubstage und Wochenstunden
+            self.execute("ALTER TABLE years MODIFY vacation_days DECIMAL(5,2) NOT NULL, "
+                         "MODIFY weekly_minutes DECIMAL(7,2) NOT NULL")
+        if version is None or int(version) < SCHEMA_VERSION:
             self.set_setting("schema_version", str(SCHEMA_VERSION))
         if self.get_setting("start_date") is None:
             self.set_setting("start_date", date.today().isoformat())
@@ -214,13 +227,13 @@ class Database:
 
     def import_data(self, data: dict) -> dict:
         """Ersetzt alle Daten durch den Inhalt einer Datensicherung."""
-        if not isinstance(data, dict) or data.get("format") != BACKUP_FORMAT:
+        if not isinstance(data, dict) or data.get("format") not in BACKUP_FORMATS_ACCEPTED:
             raise ValueError("Keine timetrack-Datensicherung")
         if int(data.get("schema_version", 0)) > SCHEMA_VERSION:
             raise ValueError("Datensicherung stammt von einer neueren Version")
         parsed = {}
         for table, cols in BACKUP_TABLES.items():
-            rows = data.get(table)
+            rows = data.get(table, [] if table in OPTIONAL_BACKUP_TABLES else None)
             if not isinstance(rows, list):
                 raise ValueError(f"Tabelle {table} fehlt")
             try:

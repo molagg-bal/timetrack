@@ -13,6 +13,9 @@ from flask import Flask, Response, jsonify, request, send_from_directory
 from . import calc, export, holidays
 from .db import Database
 
+MARK_NAMES = {"TU": "Urlaub", "AU": "Krankheit", "EGZ": "Gleitzeittag", "NF": "Feiertag"}
+NO_WORK_MARKS = ("AU", "EGZ")  # an diesen Tagen ist keine Arbeitszeit möglich
+NOTE_MAX = 2000
 TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 
 
@@ -73,7 +76,7 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
         return date.fromisoformat(db.get_setting("start_date") or now().date().isoformat())
 
     def load_ledger() -> calc.Ledger:
-        years = {int(y): calc.YearCfg(float(v), int(w))
+        years = {int(y): calc.YearCfg(float(v), float(w))
                  for y, v, w in db.query("SELECT year, vacation_days, weekly_minutes FROM years")}
         stamps: dict[date, list] = {}
         for ts, kind in db.query("SELECT ts, kind FROM stamps ORDER BY ts, id"):
@@ -111,6 +114,25 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
             raise ApiError("Ungültige Uhrzeit")
         return datetime(d.year, d.month, d.day, h, mi, se)
 
+    def parse_decimal(v, name: str) -> float:
+        """Dezimalzahl mit Punkt oder Komma, höchstens zwei Nachkommastellen."""
+        text = str(v if v is not None else "").strip().replace(",", ".")
+        if not re.fullmatch(r"\d+(\.\d{1,2})?", text):
+            raise ApiError(f"{name}: bitte eine Zahl mit höchstens zwei Nachkommastellen "
+                           f"eingeben (z. B. 39,8)")
+        return float(text)
+
+    def mark_of(d: date) -> str | None:
+        rows = db.query("SELECT kind FROM day_marks WHERE day=%s", (d,))
+        return rows[0][0] if rows else None
+
+    def require_work_allowed(d: date):
+        mark = mark_of(d)
+        if mark in NO_WORK_MARKS:
+            raise ApiError(f"Am {d:%d.%m.%Y} ist {mark} ({MARK_NAMES[mark]}) eingetragen. "
+                           "Zeiten können erst eingetragen werden, wenn die Tagesart entfernt ist.",
+                           409)
+
     def parse_kind(s) -> str:
         if s not in ("work", "pause"):
             raise ApiError("Typ muss 'work' oder 'pause' sein")
@@ -128,7 +150,13 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
                           for i, ts, k in day_stamps(d)]
         mark = db.query("SELECT auto FROM day_marks WHERE day=%s", (d,))
         res["mark_auto"] = bool(mark[0][0]) if mark else False
+        note = db.query("SELECT note FROM day_notes WHERE day=%s", (d,))
+        res["note"] = note[0][0] if note else ""
         return res
+
+    def notes_between(start: date, end: date) -> dict[date, str]:
+        return {d: n for d, n in db.query(
+            "SELECT day, note FROM day_notes WHERE day >= %s AND day <= %s", (start, end))}
 
     def status_payload() -> dict:
         n = now()
@@ -173,6 +201,8 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
         st, _ = current_state(n.date())
         expected = body().get("from")
         if expected in (None, st):
+            if st == "pause":  # Beenden bleibt immer möglich
+                require_work_allowed(n.date())
             db.execute("INSERT INTO stamps (ts, kind) VALUES (%s, %s)",
                        (n, "work" if st == "pause" else "pause"))
         # Bei abweichendem Zustand (z. B. zweiter Browser-Tab) nichts eintragen,
@@ -186,8 +216,11 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
             raise ApiError("Ungültiger Monat")
         ensure_years(year)
         ledger = load_ledger()
-        days = [ledger.day(date(year, month, i)).to_dict()
-                for i in range(1, monthrange(year, month)[1] + 1)]
+        last = monthrange(year, month)[1]
+        notes = notes_between(date(year, month, 1), date(year, month, last))
+        days = [dict(ledger.day(date(year, month, i)).to_dict(),
+                     has_note=date(year, month, i) in notes)
+                for i in range(1, last + 1)]
         vac = ledger.vacation_for(year)
         return jsonify(year=year, month=month, days=days, balance=ledger.balance,
                        vacation={k: num(v) for k, v in vac.items()},
@@ -203,6 +236,7 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
     def api_add_stamp(d):
         d = parse_date(d)
         b = body()
+        require_work_allowed(d)
         db.execute("INSERT INTO stamps (ts, kind) VALUES (%s, %s)",
                    (parse_time(d, b.get("time")), parse_kind(b.get("kind"))))
         return jsonify(day_payload(load_ledger(), d))
@@ -232,11 +266,25 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
         kind = body().get("mark") or None
         if kind is not None and kind not in calc.MARKS:
             raise ApiError("Tagesart muss TU, AU, EGZ oder NF sein")
+        if kind in NO_WORK_MARKS and day_stamps(d):
+            raise ApiError(f"Am {d:%d.%m.%Y} sind bereits Zeiten eingetragen. {kind} kann erst "
+                           "eingetragen werden, wenn alle Zeitstempel des Tages gelöscht sind.", 409)
         db.execute("DELETE FROM day_marks WHERE day=%s", (d,))
         if kind:
             note = holidays.holidays(d.year, state).get(d) if kind == "NF" else None
             db.execute("INSERT INTO day_marks (day, kind, note, auto) VALUES (%s, %s, %s, 0)",
                        (d, kind, note))
+        return jsonify(day_payload(load_ledger(), d))
+
+    @app.put("/api/day/<d>/note")
+    def api_set_note(d):
+        d = parse_date(d)
+        note = str(body().get("note") or "").strip()
+        if len(note) > NOTE_MAX:
+            raise ApiError(f"Kommentar ist zu lang (höchstens {NOTE_MAX} Zeichen)")
+        db.execute("DELETE FROM day_notes WHERE day=%s", (d,))
+        if note:
+            db.execute("INSERT INTO day_notes (day, note) VALUES (%s, %s)", (d, note))
         return jsonify(day_payload(load_ledger(), d))
 
     # --- Jahre & Einstellungen ------------------------------------------------
@@ -247,7 +295,7 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
         years = []
         for y, v, w in rows:
             vac = ledger.vacation_for(int(y))
-            years.append({"year": int(y), "vacation_days": num(v), "weekly_minutes": int(w),
+            years.append({"year": int(y), "vacation_days": num(v), "weekly_minutes": num(w),
                           "carry_in": vac["carry_in"], "available": vac["available"],
                           "taken": vac["taken"], "planned": vac["planned"],
                           "remaining": vac["remaining"],
@@ -277,11 +325,8 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
     @app.put("/api/years/<int:y>")
     def api_update_year(y):
         b = body()
-        try:
-            vac = float(b.get("vacation_days"))
-            weekly = round(float(b.get("weekly_hours")) * 60)
-        except (TypeError, ValueError):
-            raise ApiError("Ungültige Werte")
+        vac = parse_decimal(b.get("vacation_days"), "Urlaubstage")
+        weekly = round(parse_decimal(b.get("weekly_hours"), "Wochenstunden") * 60, 2)
         if not (0 <= vac <= 365 and 0 <= weekly <= 7 * 24 * 60):
             raise ApiError("Werte außerhalb des gültigen Bereichs")
         ensure_year(y)
@@ -324,7 +369,7 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
         ledger = load_ledger()
         end = ledger.today
         start = export.years_back(end, 2)
-        return download(export.build_xlsx(ledger, start, end),
+        return download(export.build_xlsx(ledger, start, end, notes_between(start, end)),
                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         f"arbeitszeiten_{start.isoformat()}_bis_{end.isoformat()}.xlsx")
 

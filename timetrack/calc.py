@@ -30,11 +30,11 @@ F_MINUS_NEG = "minus_neg"  # orange: Tag mit Minusstunden erzeugt negatives Kont
 @dataclass
 class YearCfg:
     vacation_days: float = DEFAULT_VACATION_DAYS
-    weekly_minutes: int = DEFAULT_WEEKLY_MINUTES
+    weekly_minutes: float = DEFAULT_WEEKLY_MINUTES
 
     @property
     def daily_target(self) -> int:
-        return self.weekly_minutes * 60 // 5
+        return round(self.weekly_minutes * 60 / 5)
 
 
 @dataclass

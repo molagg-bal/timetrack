@@ -18,6 +18,7 @@ const FLAG_TEXT = {
 const FLAG_COLOR = { open: "red", tu_over: "orange", egz_neg: "orange", minus_neg: "orange",
   pause_short: "yellow", over9: "yellow", missing: "grey" };
 const COLOR_ORDER = ["red", "orange", "yellow", "grey"];
+const NO_WORK_MARKS = ["AU", "EGZ"]; // an diesen Tagen ist keine Arbeitszeit möglich
 
 function fmtDur(sec) {
   const neg = sec < 0;
@@ -34,7 +35,12 @@ function setBalance(el, sec) {
   el.classList.toggle("pos", sec > 0);
 }
 function fmtDays(n) {
-  return (Math.round(n * 10) / 10).toLocaleString("de-DE");
+  return (Math.round(n * 100) / 100).toLocaleString("de-DE", { maximumFractionDigits: 2 });
+}
+// Dezimalzahl mit Komma oder Punkt, höchstens zwei Nachkommastellen
+function parseDecimal(s) {
+  const t = String(s).trim().replace(",", ".");
+  return /^\d+(\.\d{1,2})?$/.test(t) ? Number(t) : null;
 }
 function isoDate(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -250,7 +256,7 @@ function renderMonth() {
     const parts = [];
     if (day.mark) parts.push(day.mark);
     if (day.stamps > 0) parts.push(fmtDur(day.net));
-    cell.innerHTML = `<span class="cal-num">${+day.date.slice(8)}</span>
+    cell.innerHTML = `<span class="cal-num">${+day.date.slice(8)}${day.has_note ? '<span class="cal-note" title="Kommentar vorhanden">*</span>' : ""}</span>
       <span class="cal-label">${parts.join(" · ")}</span>
       <span class="cal-dots">${colors.slice(1).map((c) => `<i class="c-${c}-dot"></i>`).join("")}</span>`;
     const tips = day.flags.map((f) => FLAG_TEXT[f]);
@@ -312,35 +318,70 @@ function renderDay(d) {
   const nextKind = d.entries.length && d.entries[d.entries.length - 1].kind === "work" ? "pause" : "work";
 
   const warnings = d.flags.map((f) => `<li>${FLAG_TEXT[f]}</li>`).join("");
-  panel.innerHTML = `
-    <div class="day-head">
-      <h2>${wd}, ${deDate(d.date)}${d.mark_note ? ` · ${d.mark_note}` : ""}</h2>
-      <label>Tagesart <select id="mark-select">${markOptions}</select></label>
-    </div>
+  // Bei AU/EGZ werden keine Zeiten erfasst; die Zeiteingabe verschwindet.
+  // Ältere Tage mit AU/EGZ UND Zeiten zeigen ihre Zeiten weiter an, damit sie gelöscht werden können.
+  const noWork = NO_WORK_MARKS.includes(d.mark);
+  const showTimes = !noWork || d.entries.length > 0;
+  let timesHtml;
+  if (!showTimes) {
+    timesHtml = `<p class="hint">${d.mark} (${MARK_NAMES[d.mark]}) eingetragen – keine Zeiterfassung an diesem Tag.
+      Zum Eintragen von Zeiten die Tagesart auf „– keine –“ setzen.</p>`;
+  } else {
+    timesHtml = `
+    ${noWork ? `<p class="banner warn">An diesem Tag sind ${d.mark} und Zeiten eingetragen. Bitte die Zeitstempel löschen oder die Tagesart entfernen.</p>` : ""}
     ${d.entries.length ? "" : '<p class="hint">Keine Zeitstempel an diesem Tag.</p>'}
     <table class="entries"><tbody>
       ${rows}
-      <tr class="add">
+      ${noWork ? "" : `<tr class="add">
         <td><input type="time" step="1" id="new-time" aria-label="Neue Uhrzeit"></td>
         <td><select id="new-kind" aria-label="Neuer Typ">
           <option value="work" ${nextKind === "work" ? "selected" : ""}>work (Arbeit beginnt)</option>
           <option value="pause" ${nextKind === "pause" ? "selected" : ""}>pause (Arbeit endet)</option>
         </select></td>
         <td><button type="button" id="new-add">Hinzufügen</button></td>
-      </tr>
-    </tbody></table>
-    <div class="kv">
+      </tr>`}
+    </tbody></table>`;
+  }
+  const timeStats = showTimes ? `
       <div><span>Arbeitszeit (brutto)</span><b>${fmtDur(d.gross)}</b></div>
       <div><span>Pausen eingetragen</span><b>${fmtDur(d.pause)}</b></div>
       <div><span>Gesetzl. Pausenabzug</span><b>${fmtDur(d.deduction)}</b></div>
-      <div><span>Arbeitszeit (angerechnet)</span><b>${fmtDur(d.net)}</b></div>
+      <div><span>Arbeitszeit (angerechnet)</span><b>${fmtDur(d.net)}</b></div>` : "";
+  panel.innerHTML = `
+    <div class="day-head">
+      <h2>${wd}, ${deDate(d.date)}${d.mark_note ? ` · ${d.mark_note}` : ""}</h2>
+      <label>Tagesart <select id="mark-select">${markOptions}</select></label>
+    </div>
+    ${timesHtml}
+    <div class="kv">${timeStats}
       <div><span>Soll</span><b>${fmtDur(d.target)}</b></div>
       <div><span>Saldo des Tages</span><b class="${d.delta < 0 ? "neg" : d.delta > 0 ? "pos" : ""}">${d.counted || d.stamps > 0 ? fmtSigned(d.delta) : "–"}</b></div>
     </div>
-    ${warnings ? `<ul class="warnings">${warnings}</ul>` : ""}`;
+    ${warnings ? `<ul class="warnings">${warnings}</ul>` : ""}
+    <div class="note">
+      <label for="note-text">Kommentar</label>
+      <textarea id="note-text" rows="3" maxlength="2000" placeholder="Kommentar zu diesem Tag"></textarea>
+      <div><button type="button" id="note-save">Kommentar speichern</button></div>
+    </div>`;
 
-  $("#mark-select", panel).addEventListener("change", (e) =>
-    handle(api("PUT", `/api/day/${d.date}/mark`, { mark: e.target.value || null }).then(afterDayChange)));
+  const noteText = $("#note-text", panel);
+  noteText.value = d.note || "";
+  $("#note-save", panel).addEventListener("click", () =>
+    handle(api("PUT", `/api/day/${d.date}/note`, { note: noteText.value })
+      .then((res) => { toast(res.note ? "Kommentar gespeichert." : "Kommentar entfernt."); return afterDayChange(res); })));
+
+  $("#mark-select", panel).addEventListener("change", (e) => {
+    const mark = e.target.value || null;
+    if (NO_WORK_MARKS.includes(mark) && d.entries.length) {
+      toast(`${mark} kann nicht eingetragen werden: An diesem Tag sind bereits Zeiten eingetragen. Bitte zuerst alle Zeitstempel löschen.`);
+      e.target.value = d.mark || "";
+      return;
+    }
+    api("PUT", `/api/day/${d.date}/mark`, { mark }).then(afterDayChange).catch((err) => {
+      toast(err.message);
+      renderDay(d); // Auswahl zurücksetzen
+    });
+  });
 
   for (const tr of panel.querySelectorAll("tr[data-id]")) {
     const id = tr.dataset.id;
@@ -353,7 +394,8 @@ function renderDay(d) {
       if (confirm("Eintrag löschen?")) handle(api("DELETE", `/api/stamps/${id}`).then(afterDayChange));
     });
   }
-  $("#new-add", panel).addEventListener("click", () => {
+  const addBtn = $("#new-add", panel);
+  if (addBtn) addBtn.addEventListener("click", () => {
     const time = $("#new-time", panel).value;
     if (!time) { toast("Bitte eine Uhrzeit angeben."); return; }
     handle(api("POST", `/api/day/${d.date}/stamps`, { time, kind: $("#new-kind", panel).value }).then(afterDayChange));
@@ -388,8 +430,8 @@ function renderYears(data) {
   tb.innerHTML = data.years.map((y) => `
     <tr data-year="${y.year}" class="${y.before_start ? "inactive" : ""}">
       <td><strong>${y.year}</strong></td>
-      <td><input type="number" class="y-vac" min="0" max="365" step="0.5" value="${y.vacation_days}" aria-label="Urlaubstage"></td>
-      <td><input type="number" class="y-week" min="0" max="168" step="0.25" value="${Math.round(y.weekly_minutes / 60 * 100) / 100}" aria-label="Wochenstunden"></td>
+      <td><input type="text" inputmode="decimal" class="y-vac" value="${fmtDays(y.vacation_days)}" aria-label="Urlaubstage"></td>
+      <td><input type="text" inputmode="decimal" class="y-week" value="${fmtDays(y.weekly_minutes / 60)}" aria-label="Wochenstunden"></td>
       <td>${y.before_start ? "–" : fmtDays(y.carry_in)}</td>
       <td>${y.before_start ? "–" : fmtDays(y.available)}</td>
       <td>${y.before_start ? "–" : fmtDays(y.taken)}</td>
@@ -403,9 +445,15 @@ function renderYears(data) {
     </tr>`).join("");
   for (const tr of tb.querySelectorAll("tr")) {
     const y = tr.dataset.year;
-    $(".y-save", tr).addEventListener("click", () => handle(api("PUT", `/api/years/${y}`, {
-      vacation_days: $(".y-vac", tr).value, weekly_hours: $(".y-week", tr).value,
-    }).then((d) => { renderYears(d); toast(`Jahr ${y} gespeichert.`); })));
+    $(".y-save", tr).addEventListener("click", () => {
+      const vac = parseDecimal($(".y-vac", tr).value), week = parseDecimal($(".y-week", tr).value);
+      if (vac === null || week === null) {
+        toast("Bitte Zahlen mit höchstens zwei Nachkommastellen eingeben, z. B. 27,5 oder 39,8.");
+        return;
+      }
+      handle(api("PUT", `/api/years/${y}`, { vacation_days: vac, weekly_hours: week })
+        .then((d) => { renderYears(d); toast(`Jahr ${y} gespeichert.`); }));
+    });
     $(".y-hol", tr).addEventListener("click", () => handle(api("POST", `/api/years/${y}/holidays`)
       .then((d) => { renderYears(d); toast(`Feiertage für ${y} eingetragen.`); })));
   }

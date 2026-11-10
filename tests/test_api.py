@@ -115,29 +115,48 @@ def test_excel_export(env):
     c.post("/api/day/2026-11-06/stamps", json={"time": "08:00", "kind": "work"})
     c.put("/api/day/2026-11-04/mark", json={"mark": "TU"})
     c.put("/api/day/2026-11-05/mark", json={"mark": "AU"})
+    c.put("/api/day/2026-11-03/note", json={"note": "Kundentermin\nlang"})
     c.put("/api/day/2025-03-10/mark", json={"mark": "EGZ"})
+    c.put("/api/day/2025-07-01/note", json={"note": "nur Kommentar"})
     c.put("/api/day/2024-11-05/mark", json={"mark": "TU"})  # vor dem Zeitraum
     r = c.get("/api/export/excel")
     assert r.status_code == 200
     assert "2024-11-06_bis_2026-11-06" in r.headers["Content-Disposition"]
     wb = openpyxl.load_workbook(io.BytesIO(r.data))
-    assert wb.sheetnames == ["März 2025", "November 2026"]
+    assert wb.sheetnames == ["März 2025", "Juli 2025", "November 2026"]
     ws = wb["November 2026"]
     stats = {ws.cell(row, 1).value: ws.cell(row, 3).value for row in range(3, 7)}
     # Mo 2.11. fehlt (-8h), Di +0:30, Mi TU, Do AU; heute nicht gezählt
     assert stats["Überstunden im Monat"] == "-7:30 h"
     assert stats["Genutzte Urlaubstage"] == 1 and stats["Krankheitstage"] == 1
-    rows = {ws.cell(row, 1).value.date().day: [ws.cell(row, col).value for col in range(1, 11)]
+    assert [ws.cell(9, col).value for col in range(1, 7)] == [
+        "Datum", "Wochentag", "Tagesart", "Arbeitszeit", "Pausenzeit", "Kommentar"]
+    assert ws.max_column == 6  # keine Einzeleinträge mehr
+    rows = {ws.cell(row, 1).value.date().day: [ws.cell(row, col).value for col in range(1, 7)]
             for row in range(10, 16)}
-    assert len([r for r in ws.iter_rows(min_row=10) if r[0].value]) == 6  # 1.–6.11.
-    assert rows[3][3:6] == ["08:00", "17:00", "08:00–12:00, 12:30–17:00"]
-    assert round(rows[3][6].total_seconds() if hasattr(rows[3][6], "total_seconds") else rows[3][6] * 86400) == 8.5 * 3600
+
+    def sec(v):
+        return round(v.total_seconds() if hasattr(v, "total_seconds") else v * 86400)
+
+    assert sec(rows[3][3]) == 8.5 * 3600 and sec(rows[3][4]) == 30 * 60
+    assert rows[3][5] == "Kundentermin\nlang"
     assert rows[4][2] == "Urlaub" and rows[5][2] == "Krankschreibung"
-    assert rows[6][5] == "08:00–(läuft)"
     m = wb["März 2025"]
     assert m.cell(10, 1).value.date().day == 1  # alle Tage des Monats
     assert any(row[2].value == "Gleitzeittag" for row in m.iter_rows(min_row=10))
-    assert any(row[2].value == "Feiertag" for row in m.iter_rows(min_row=10)) is False  # März ohne NF in NI
+
+
+def test_excel_pause_includes_legal_deduction(env):
+    openpyxl = pytest.importorskip("openpyxl")
+    import io
+    c, clock = env
+    clock.t = datetime(2026, 11, 6, 10, 0)
+    c.post("/api/day/2026-11-02/stamps", json={"time": "08:00", "kind": "work"})
+    c.post("/api/day/2026-11-02/stamps", json={"time": "16:00", "kind": "pause"})
+    ws = openpyxl.load_workbook(io.BytesIO(c.get("/api/export/excel").data))["November 2026"]
+    work, pause = ws.cell(11, 4).value, ws.cell(11, 5).value  # Zeile 11 = 2.11.
+    to_s = lambda v: round(v.total_seconds() if hasattr(v, "total_seconds") else v * 86400)  # noqa: E731
+    assert to_s(work) == 7.5 * 3600 and to_s(pause) == 30 * 60
 
 
 def test_backup_roundtrip(env):
@@ -173,3 +192,117 @@ def test_backup_rollback(env):
     r = c.post("/api/backup", json=dup)
     assert r.status_code == 400 and "unverändert" in r.get_json()["error"]
     assert c.get("/api/backup").get_json()["stamps"] == backup["stamps"]
+
+
+def test_decimal_year_values(env):
+    c, clock = env
+    clock.t = datetime(2026, 11, 6, 9, 0)
+    y = c.put("/api/years/2026", json={"vacation_days": "27,25", "weekly_hours": "39,8"}).get_json()
+    assert y["years"][0]["vacation_days"] == 27.25
+    assert y["years"][0]["weekly_minutes"] == 2388
+    y = c.put("/api/years/2026", json={"vacation_days": 27.5, "weekly_hours": 39.83}).get_json()
+    assert y["years"][0]["weekly_minutes"] == 2389.8
+    # Soll pro Tag = 39,83 h / 5 = 7,966 h = 7:57:58
+    assert c.get("/api/day/2026-11-02").get_json()["target"] == round(2389.8 * 60 / 5)
+    for bad in ("39,812", "abc", "", "-1"):
+        r = c.put("/api/years/2026", json={"vacation_days": "30", "weekly_hours": bad})
+        assert r.status_code == 400, bad
+    # Datensicherung mit Dezimalwerten
+    backup = c.get("/api/backup").get_json()
+    assert backup["schema_version"] == 3
+    assert c.post("/api/backup", json=backup).status_code == 200
+    assert c.get("/api/years").get_json()["years"][0]["weekly_minutes"] == 2389.8
+
+
+def test_work_blocked_only_on_au_and_egz(env):
+    c, clock = env
+    clock.t = datetime(2026, 11, 6, 9, 0)
+    # Zeiten vorhanden -> AU/EGZ abgelehnt, TU/NF erlaubt
+    c.post("/api/day/2026-11-03/stamps", json={"time": "08:00", "kind": "work"})
+    c.post("/api/day/2026-11-03/stamps", json={"time": "12:00", "kind": "pause"})
+    for mark in ("AU", "EGZ"):
+        r = c.put("/api/day/2026-11-03/mark", json={"mark": mark})
+        assert r.status_code == 409 and "Zeiten eingetragen" in r.get_json()["error"]
+    d = c.put("/api/day/2026-11-03/mark", json={"mark": "TU"}).get_json()
+    assert d["mark"] == "TU" and d["delta"] == 4 * 3600  # Arbeit an TU = Überstunden
+    # AU gesetzt -> keine Zeiten möglich, nach Entfernen wieder
+    c.put("/api/day/2026-11-04/mark", json={"mark": "AU"})
+    r = c.post("/api/day/2026-11-04/stamps", json={"time": "08:00", "kind": "work"})
+    assert r.status_code == 409 and "AU" in r.get_json()["error"]
+    c.put("/api/day/2026-11-04/mark", json={"mark": None})
+    assert c.post("/api/day/2026-11-04/stamps", json={"time": "08:00", "kind": "work"}).status_code == 200
+    # TU gesetzt -> Zeiten erlaubt
+    c.put("/api/day/2026-11-05/mark", json={"mark": "TU"})
+    assert c.post("/api/day/2026-11-05/stamps", json={"time": "08:00", "kind": "work"}).status_code == 200
+    # Startseite: heute EGZ -> Stempeln abgelehnt; heute NF -> erlaubt
+    c.put("/api/day/2026-11-06/mark", json={"mark": "EGZ"})
+    assert c.post("/api/toggle", json={"from": "pause"}).status_code == 409
+    c.put("/api/day/2026-11-06/mark", json={"mark": "NF"})
+    assert c.post("/api/toggle", json={"from": "pause"}).get_json()["state"] == "work"
+
+
+def test_work_on_holiday_is_overtime(env):
+    c, clock = env
+    clock.t = datetime(2026, 12, 28, 9, 0)
+    c.get("/api/status")  # legt das Jahr samt Feiertagen an
+    c.post("/api/day/2026-12-25/stamps", json={"time": "08:00", "kind": "work"})
+    d = c.post("/api/day/2026-12-25/stamps", json={"time": "12:00", "kind": "pause"}).get_json()
+    assert d["mark"] == "NF" and d["target"] == 0 and d["delta"] == 4 * 3600
+    # Feiertage eines neuen Jahres werden auch auf Tage mit Zeiten gesetzt
+    c.post("/api/day/2027-01-01/stamps", json={"time": "08:00", "kind": "work"})
+    c.post("/api/years", json={"year": 2027})
+    assert c.get("/api/day/2027-01-01").get_json()["mark"] == "NF"
+
+
+def test_day_note(env):
+    c, clock = env
+    clock.t = datetime(2026, 11, 6, 9, 0)
+    d = c.put("/api/day/2026-11-03/note", json={"note": "  Arzttermin <b>9 Uhr</b>  "}).get_json()
+    assert d["note"] == "Arzttermin <b>9 Uhr</b>"
+    days = {x["date"]: x for x in c.get("/api/month/2026/11").get_json()["days"]}
+    assert days["2026-11-03"]["has_note"] and not days["2026-11-04"]["has_note"]
+    assert c.put("/api/day/2026-11-03/note", json={"note": "x" * 2001}).status_code == 400
+    backup = c.get("/api/backup").get_json()
+    assert backup["day_notes"] == [{"day": "2026-11-03", "note": "Arzttermin <b>9 Uhr</b>"}]
+    d = c.put("/api/day/2026-11-03/note", json={"note": ""}).get_json()
+    assert d["note"] == ""
+    assert c.post("/api/backup", json=backup).status_code == 200
+    assert c.get("/api/day/2026-11-03").get_json()["note"] == "Arzttermin <b>9 Uhr</b>"
+
+
+def test_old_backups_accepted(env):
+    c, _ = env
+    backup = c.get("/api/backup").get_json()
+    old = {k: v for k, v in backup.items() if k != "day_notes"}
+    old.update(format="timeapp-backup", schema_version=1)
+    assert c.post("/api/backup", json=old).status_code == 200
+
+
+def test_upgrade_v1_database(tmp_path):
+    """Eine Datenbank im Schema v1 wird beim Start ohne Datenverlust weiterverwendet."""
+    import sqlite3
+    path = tmp_path / "v1.db"
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE settings (name TEXT PRIMARY KEY, value TEXT NOT NULL);
+        CREATE TABLE stamps (id INTEGER PRIMARY KEY AUTOINCREMENT, ts DATETIME NOT NULL, kind TEXT NOT NULL);
+        CREATE TABLE day_marks (day DATE PRIMARY KEY, kind TEXT NOT NULL, note TEXT NULL, auto INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE years (year INTEGER PRIMARY KEY, vacation_days REAL NOT NULL,
+                            weekly_minutes INTEGER NOT NULL, holidays_done INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO settings VALUES ('schema_version','1'),('start_date','2026-11-02'),('start_balance','3600');
+        INSERT INTO stamps (ts, kind) VALUES ('2026-11-03 08:00:00','work'),('2026-11-03 16:00:00','pause');
+        INSERT INTO day_marks VALUES ('2026-11-04','TU',NULL,0);
+        INSERT INTO years VALUES (2026, 30, 2400, 1);
+    """)
+    con.commit()
+    con.close()
+    e = {"TIMETRACK_DB_SQLITE": str(path)}
+    db = Database(e)
+    db.init_schema()
+    assert db.get_setting("schema_version") == "3"
+    c = create_app(db, env=e, clock=Clock(datetime(2026, 11, 6, 9, 0))).test_client()
+    assert c.get("/api/day/2026-11-03").get_json()["net"] == 7.5 * 3600
+    assert c.get("/api/day/2026-11-04").get_json()["mark"] == "TU"
+    assert c.put("/api/day/2026-11-04/note", json={"note": "neu"}).status_code == 200
+    y = c.put("/api/years/2026", json={"vacation_days": "30", "weekly_hours": "39,8"}).get_json()
+    assert y["years"][0]["weekly_minutes"] == 2388 and y["start_balance"] == 3600

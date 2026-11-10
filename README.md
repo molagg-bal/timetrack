@@ -68,17 +68,22 @@ Farben:
 Trifft mehr als eine Farbe zu, gilt die Reihenfolge rot > orange > gelb > grau; weitere
 Markierungen erscheinen als Punkte.
 
-**Jahre & Einstellungen:** pro Jahr Urlaubstage und Wochenarbeitszeit. Resturlaub wird
+**Jahre & Einstellungen:** pro Jahr Urlaubstage und Wochenarbeitszeit, beide als
+Dezimalzahl mit bis zu zwei Nachkommastellen (Komma oder Punkt, z. B. 39,8 h). Resturlaub wird
 automatisch ins Folgejahr übertragen, negativer Rest ebenso. Ein neues Jahr übernimmt
 die Werte des Vorjahres. Dazu kommen Startdatum und Startsaldo des Überstundenkontos.
 
+**Kommentar:** In der Tagesansicht gibt es pro Tag ein Kommentarfeld. Im Kalender zeigt
+ein `*` an, dass ein Kommentar existiert; der Text selbst steht nur in der Tagesansicht
+und im Excel-Export.
+
 **Export & Datensicherung:**
 - Excel-Export der letzten zwei Jahre, taggenau ab heute zurückgerechnet. Pro
-  Kalendermonat gibt es einen Reiter mit allen Tagen: Arbeitsbeginn/-ende,
-  Arbeitsphasen, Arbeitszeit, Pausenzeit, gesetzlicher Pausenabzug und Tagesart als
-  Text (Urlaub, Krankschreibung, Gleitzeittag, Feiertag). Oben steht die
+  Kalendermonat gibt es einen Reiter mit allen Tagen: Tagesart als Text (Urlaub,
+  Krankschreibung, Gleitzeittag, Feiertag), Gesamtarbeitszeit, Gesamtpausenzeit
+  (eingetragene Pausen plus gesetzlicher Abzug) und Kommentar. Oben steht die
   Monatsstatistik: Überstunden im Monat, Gesamtarbeitszeit, genutzte Urlaubstage und
-  Krankheitstage. Monate ohne Zeitstempel und ohne TU/AU/EGZ werden weggelassen.
+  Krankheitstage. Monate ohne Zeitstempel, ohne TU/AU/EGZ und ohne Kommentar werden weggelassen.
 - Datensicherung: Der gesamte Datenbankinhalt wird als JSON-Datei heruntergeladen.
 - Einspielen einer Datensicherung: Nach zwei Sicherheitsabfragen werden alle
   vorhandenen Daten gelöscht und durch die Datei ersetzt. Das geschieht in einer
@@ -87,6 +92,11 @@ die Werte des Vorjahres. Dazu kommen Startdatum und Startsaldo des Überstundenk
 ## Rechenregeln
 
 - Soll pro Tag Mo–Fr = Wochenarbeitszeit / 5. Sa/So und NF: Soll 0, jede Arbeit dort sind Überstunden.
+- An AU- und EGZ-Tagen ist keine Arbeitszeit möglich: Die Zeiteingabe verschwindet, und
+  das Stempeln auf der Startseite ist gesperrt. Stehen an einem Tag schon Zeiten, lässt
+  sich AU/EGZ nicht setzen (Fehlermeldung).
+- An TU- und NF-Tagen kann gearbeitet werden. Die Arbeitszeit zählt dort komplett als
+  Überstunden; der Urlaubstag bleibt verbraucht.
 - TU und AU: Soll gilt als erfüllt. EGZ: Soll wird vom Überstundenkonto abgezogen.
 - Arbeitszeit = Summe der Intervalle von „work“ bis zum nächsten „pause“. Pausen sind die
   Lücken zwischen den Arbeitsintervallen.
@@ -101,13 +111,26 @@ die Werte des Vorjahres. Dazu kommen Startdatum und Startsaldo des Überstundenk
   löschen oder ändern, und über „Feiertage“ auf der Jahresseite erneut eintragen.
 - Arbeit über Mitternacht wird nicht unterstützt (jeder Tag wird für sich gerechnet).
 
+## Update einer bestehenden Installation
+
+Die vorhandene Datenbank wird weiterverwendet. Beim ersten Start einer neuen Version
+stellt timetrack das Schema selbst um (Schema-Version steht in `settings`):
+
+- v1 → v2: Urlaubstage und Wochenstunden als Dezimalzahlen
+- v2 → v3: Tabelle `day_notes` für Kommentare
+
+Wer die Umstellung lieber selbst vorab ausführen will: `migrations/v1-zu-v3.sql`
+(`sudo mysql timetrack < v1-zu-v3.sql`). Ältere Datensicherungen (auch von „timeapp“)
+lassen sich weiterhin einspielen.
+
 ## Datenbankschema
 
 | Tabelle | Inhalt |
 |---|---|
 | `stamps(id, ts DATETIME, kind ENUM('work','pause'))` | ein Eintrag je Button-Klick, Index auf `ts` |
 | `day_marks(day DATE PK, kind ENUM('TU','AU','EGZ','NF'), note, auto)` | höchstens eine Tagesart je Tag |
-| `years(year PK, vacation_days, weekly_minutes, holidays_done)` | Jahreseinstellungen |
+| `years(year PK, vacation_days DECIMAL(5,2), weekly_minutes DECIMAL(7,2), holidays_done)` | Jahreseinstellungen |
+| `day_notes(day DATE PK, note TEXT)` | ein Kommentar je Tag |
 | `settings(name PK, value)` | Startdatum, Startsaldo (Sekunden), Schema-Version |
 
 Gespeichert werden nur Rohdaten. Salden, Urlaubsübertrag und Markierungen berechnet die
