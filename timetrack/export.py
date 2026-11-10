@@ -42,7 +42,9 @@ def build_xlsx(ledger: calc.Ledger, start: date, end: date,
                notes: dict[date, str] | None = None) -> bytes:
     notes = notes or {}
     buf = io.BytesIO()
-    wb = xlsxwriter.Workbook(buf, {"in_memory": True})
+    # Texte nie als Formel, Zahl oder Link interpretieren (Schutz vor Formel-Injection)
+    wb = xlsxwriter.Workbook(buf, {"in_memory": True, "strings_to_formulas": False,
+                                   "strings_to_urls": False, "strings_to_numbers": False})
     f_title = wb.add_format({"bold": True, "font_size": 14})
     f_label = wb.add_format({"bold": True})
     f_head = wb.add_format({"bold": True, "bg_color": "#D9DCE2", "border": 1})
@@ -125,4 +127,4 @@ def _write_month(wb, y, m, days, results, ledger, notes, f_title, f_label, f_hea
         else:
             ws.write_blank(row, 3, None, fmt["dur"])
             ws.write_blank(row, 4, None, fmt["dur"])
-        ws.write(row, notes_col, notes.get(d, ""), fmt["wrap"])
+        ws.write_string(row, notes_col, notes.get(d, ""), fmt["wrap"])

@@ -20,6 +20,13 @@ const FLAG_COLOR = { open: "red", tu_over: "orange", egz_neg: "orange", minus_ne
 const COLOR_ORDER = ["red", "orange", "yellow", "grey"];
 const NO_WORK_MARKS = ["AU", "EGZ"]; // an diesen Tagen ist keine Arbeitszeit möglich
 
+// Maskiert Text für das Einsetzen in HTML (innerHTML, Attributwerte).
+// JEDER Wert aus Server/Datenbank, der in ein HTML-Template kommt, muss hier durch.
+function esc(v) {
+  return String(v ?? "").replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+}
+
 function fmtDur(sec) {
   const neg = sec < 0;
   sec = Math.abs(Math.round(sec));
@@ -62,9 +69,10 @@ function legalNet(gross, pause) {
 
 async function api(method, url, body) {
   const opts = { method, headers: {} };
-  if (body !== undefined) {
+  // Ändernde Anfragen immer als JSON senden (verlangt der Server als CSRF-Schutz)
+  if (method !== "GET") {
     opts.headers["Content-Type"] = "application/json";
-    opts.body = JSON.stringify(body);
+    opts.body = JSON.stringify(body === undefined ? {} : body);
   }
   const res = await fetch(url, opts);
   let data = null;
@@ -158,7 +166,7 @@ function renderMain() {
 
   const warn = $("#open-warning");
   if (status.open_days.length) {
-    const links = status.open_days.slice(-5).map((d) => `<a href="#/kalender/${d}">${deDate(d)}</a>`).join(", ");
+    const links = status.open_days.slice(-5).map((d) => `<a href="#/kalender/${esc(d)}">${esc(deDate(d))}</a>`).join(", ");
     warn.innerHTML = `Arbeitszeit nicht beendet an: ${links}${status.open_days.length > 5 ? " …" : ""}`;
     warn.hidden = false;
   } else {
@@ -257,7 +265,7 @@ function renderMonth() {
     if (day.mark) parts.push(day.mark);
     if (day.stamps > 0) parts.push(fmtDur(day.net));
     cell.innerHTML = `<span class="cal-num">${+day.date.slice(8)}${day.has_note ? '<span class="cal-note" title="Kommentar vorhanden">*</span>' : ""}</span>
-      <span class="cal-label">${parts.join(" · ")}</span>
+      <span class="cal-label">${esc(parts.join(" · "))}</span>
       <span class="cal-dots">${colors.slice(1).map((c) => `<i class="c-${c}-dot"></i>`).join("")}</span>`;
     const tips = day.flags.map((f) => FLAG_TEXT[f]);
     if (day.mark_note) tips.unshift(day.mark_note);
@@ -307,8 +315,8 @@ function renderDay(d) {
   const markOptions = ["", "TU", "AU", "EGZ", "NF"].map((k) =>
     `<option value="${k}" ${d.mark === k || (!d.mark && !k) ? "selected" : ""}>${k ? `${k} – ${MARK_NAMES[k]}` : "– keine –"}</option>`).join("");
   const rows = d.entries.map((e) => `
-    <tr data-id="${e.id}">
-      <td><input type="time" step="1" value="${e.time}" class="e-time" aria-label="Uhrzeit"></td>
+    <tr data-id="${esc(e.id)}">
+      <td><input type="time" step="1" value="${esc(e.time)}" class="e-time" aria-label="Uhrzeit"></td>
       <td><select class="e-kind" aria-label="Typ">
         <option value="work" ${e.kind === "work" ? "selected" : ""}>work (Arbeit beginnt)</option>
         <option value="pause" ${e.kind === "pause" ? "selected" : ""}>pause (Arbeit endet)</option>
@@ -324,11 +332,11 @@ function renderDay(d) {
   const showTimes = !noWork || d.entries.length > 0;
   let timesHtml;
   if (!showTimes) {
-    timesHtml = `<p class="hint">${d.mark} (${MARK_NAMES[d.mark]}) eingetragen – keine Zeiterfassung an diesem Tag.
+    timesHtml = `<p class="hint">${esc(d.mark)} (${esc(MARK_NAMES[d.mark])}) eingetragen – keine Zeiterfassung an diesem Tag.
       Zum Eintragen von Zeiten die Tagesart auf „– keine –“ setzen.</p>`;
   } else {
     timesHtml = `
-    ${noWork ? `<p class="banner warn">An diesem Tag sind ${d.mark} und Zeiten eingetragen. Bitte die Zeitstempel löschen oder die Tagesart entfernen.</p>` : ""}
+    ${noWork ? `<p class="banner warn">An diesem Tag sind ${esc(d.mark)} und Zeiten eingetragen. Bitte die Zeitstempel löschen oder die Tagesart entfernen.</p>` : ""}
     ${d.entries.length ? "" : '<p class="hint">Keine Zeitstempel an diesem Tag.</p>'}
     <table class="entries"><tbody>
       ${rows}
@@ -349,7 +357,7 @@ function renderDay(d) {
       <div><span>Arbeitszeit (angerechnet)</span><b>${fmtDur(d.net)}</b></div>` : "";
   panel.innerHTML = `
     <div class="day-head">
-      <h2>${wd}, ${deDate(d.date)}${d.mark_note ? ` · ${d.mark_note}` : ""}</h2>
+      <h2>${esc(wd)}, ${esc(deDate(d.date))}${d.mark_note ? ` · ${esc(d.mark_note)}` : ""}</h2>
       <label>Tagesart <select id="mark-select">${markOptions}</select></label>
     </div>
     ${timesHtml}
@@ -428,10 +436,10 @@ function renderYears(data) {
 
   const tb = $("#years-body");
   tb.innerHTML = data.years.map((y) => `
-    <tr data-year="${y.year}" class="${y.before_start ? "inactive" : ""}">
-      <td><strong>${y.year}</strong></td>
-      <td><input type="text" inputmode="decimal" class="y-vac" value="${fmtDays(y.vacation_days)}" aria-label="Urlaubstage"></td>
-      <td><input type="text" inputmode="decimal" class="y-week" value="${fmtDays(y.weekly_minutes / 60)}" aria-label="Wochenstunden"></td>
+    <tr data-year="${esc(y.year)}" class="${y.before_start ? "inactive" : ""}">
+      <td><strong>${esc(y.year)}</strong></td>
+      <td><input type="text" inputmode="decimal" class="y-vac" value="${esc(fmtDays(y.vacation_days))}" aria-label="Urlaubstage"></td>
+      <td><input type="text" inputmode="decimal" class="y-week" value="${esc(fmtDays(y.weekly_minutes / 60))}" aria-label="Wochenstunden"></td>
       <td>${y.before_start ? "–" : fmtDays(y.carry_in)}</td>
       <td>${y.before_start ? "–" : fmtDays(y.available)}</td>
       <td>${y.before_start ? "–" : fmtDays(y.taken)}</td>

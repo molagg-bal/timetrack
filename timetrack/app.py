@@ -10,12 +10,11 @@ from decimal import Decimal
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from . import calc, export, holidays
-from .db import Database
+from . import calc, export, holidays, security
+from .db import NOTE_MAX, Database
 
 MARK_NAMES = {"TU": "Urlaub", "AU": "Krankheit", "EGZ": "Gleitzeittag", "NF": "Feiertag"}
 NO_WORK_MARKS = ("AU", "EGZ")  # an diesen Tagen ist keine Arbeitszeit möglich
-NOTE_MAX = 2000
 TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 
 
@@ -34,6 +33,8 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
     static_dir = os.path.join(os.path.dirname(__file__), "static")
     app = Flask(__name__, static_folder=None)
     app.json.ensure_ascii = False
+    app.config["MAX_CONTENT_LENGTH"] = security.MAX_REQUEST_BYTES
+    hosts = security.allowed_hosts(env)
 
     def now() -> datetime:
         return clock().replace(microsecond=0)
@@ -175,11 +176,21 @@ def create_app(db: Database | None = None, env=os.environ, clock=datetime.now) -
     def _api_error(e: ApiError):
         return jsonify(error=str(e)), e.status
 
+    @app.errorhandler(413)
+    def _too_large(_e):
+        return jsonify(error="Anfrage bzw. Datei ist zu groß"), 413
+
+    @app.before_request
+    def _guard():
+        msg = security.check_request(request, hosts)
+        if msg:
+            return jsonify(error=msg), 403
+
     @app.after_request
-    def _no_cache(resp):
+    def _headers(resp):
         if request.path.startswith("/api/"):
             resp.headers["Cache-Control"] = "no-store"
-        return resp
+        return security.add_headers(resp)
 
     # --- Statische Seiten ---------------------------------------------------
     @app.get("/")

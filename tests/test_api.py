@@ -72,8 +72,8 @@ def test_calendar_edit(env):
     assert d["mark"] is None
     assert c.put("/api/day/2026-11-02/mark", json={"mark": "XY"}).status_code == 400
     assert c.post("/api/day/2026-11-02/stamps", json={"time": "25:00", "kind": "work"}).status_code == 400
-    assert c.delete(f"/api/stamps/{sid}").status_code == 200
-    assert c.delete(f"/api/stamps/{sid}").status_code == 404
+    assert c.delete(f"/api/stamps/{sid}", json={}).status_code == 200
+    assert c.delete(f"/api/stamps/{sid}", json={}).status_code == 404
 
 
 def test_holidays_auto_and_years(env):

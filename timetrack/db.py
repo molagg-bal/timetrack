@@ -24,13 +24,29 @@ BACKUP_FORMATS_ACCEPTED = (BACKUP_FORMAT, "timeapp-backup")  # auch Sicherungen 
 OPTIONAL_BACKUP_TABLES = ("day_notes",)  # fehlen in Sicherungen vor v3
 
 # Tabellen und Spalten der Datensicherung, mit Umwandlung aus JSON
+NOTE_MAX = 2000  # Höchstlänge eines Tageskommentars
+
+
+def _text(max_len: int, nullable: bool = False):
+    """Umwandlung für Textspalten: muss ein String sein und in die Spalte passen."""
+    def conv(v):
+        if v is None and nullable:
+            return None
+        if not isinstance(v, str):
+            raise ValueError("Text erwartet")
+        if len(v) > max_len:
+            raise ValueError(f"Text länger als {max_len} Zeichen")
+        return v
+    return conv
+
+
 BACKUP_TABLES = {
-    "settings": {"name": str, "value": str},
+    "settings": {"name": _text(50), "value": _text(255)},
     "years": {"year": int, "vacation_days": float, "weekly_minutes": float, "holidays_done": int},
-    "day_marks": {"day": date.fromisoformat, "kind": str, "note": lambda v: None if v is None else str(v),
+    "day_marks": {"day": date.fromisoformat, "kind": _text(3), "note": _text(100, nullable=True),
                   "auto": int},
-    "stamps": {"id": int, "ts": datetime.fromisoformat, "kind": str},
-    "day_notes": {"day": date.fromisoformat, "note": str},
+    "stamps": {"id": int, "ts": datetime.fromisoformat, "kind": _text(5)},
+    "day_notes": {"day": date.fromisoformat, "note": _text(NOTE_MAX)},
 }
 
 MYSQL_SCHEMA = [

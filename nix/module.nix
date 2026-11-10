@@ -8,6 +8,7 @@
 
 let
   cfg = config.services.timetrack;
+  localOnly = builtins.elem cfg.listenAddress [ "127.0.0.1" "::1" "localhost" ];
   states = [ "BW" "BY" "BE" "BB" "HB" "HH" "HE" "MV" "NI" "NW" "RP" "SL" "SN" "ST" "SH" "TH" ];
 in
 {
@@ -31,6 +32,26 @@ in
       type = lib.types.str;
       default = "127.0.0.1";
       description = "Adresse, auf der der Webserver lauscht (Standard: nur lokal).";
+    };
+
+    allowedHosts = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = [ ];
+      example = [ "mein-pc.lan" ];
+      description = ''
+        Zusätzliche Hostnamen, unter denen die Weboberfläche aufgerufen werden darf.
+        localhost, 127.0.0.1 und ::1 sind immer erlaubt; alle anderen Namen werden
+        als Schutz vor DNS-Rebinding abgewiesen.
+      '';
+    };
+
+    hardening = lib.mkOption {
+      type = lib.types.bool;
+      default = true;
+      description = ''
+        Strenge systemd-Sandbox für den Dienst. Nur zur Fehlersuche abschalten,
+        falls der Dienst damit nicht startet.
+      '';
     };
 
     holidayState = lib.mkOption {
@@ -62,6 +83,8 @@ in
     services.mysql = lib.mkIf cfg.database.createLocally {
       enable = true;
       package = lib.mkDefault pkgs.mariadb;
+      # Nur über localhost erreichbar, nie aus dem Netz
+      settings.mysqld.bind-address = lib.mkDefault "127.0.0.1";
       ensureDatabases = [ cfg.database.name ];
       ensureUsers = [
         {
@@ -69,6 +92,13 @@ in
           ensurePermissions = { "${cfg.database.name}.*" = "ALL PRIVILEGES"; };
         }
       ];
+    };
+
+    # Zweite Schutzschicht für MariaDB: der Kernel verwirft alle IP-Pakete, die nicht
+    # von/zu localhost gehen (der Unix-Socket ist davon nicht betroffen).
+    systemd.services.mysql.serviceConfig = lib.mkIf cfg.database.createLocally {
+      IPAddressAllow = lib.mkDefault "localhost";
+      IPAddressDeny = lib.mkDefault "any";
     };
 
     users.users.timetrack = {
@@ -91,6 +121,7 @@ in
         TIMETRACK_DB_NAME = cfg.database.name;
         TIMETRACK_DB_USER = "timetrack";
         TIMETRACK_DB_SOCKET = cfg.database.socket;
+        TIMETRACK_ALLOWED_HOSTS = lib.concatStringsSep "," cfg.allowedHosts;
       };
 
       serviceConfig = {
@@ -103,7 +134,36 @@ in
         PrivateTmp = true;
         ProtectHome = true;
         ProtectSystem = "full";
-      };
+        UMask = "0077";
+      } // lib.optionalAttrs cfg.hardening ({
+        # Dateisystem komplett schreibgeschützt; die App schreibt keine Dateien
+        ProtectSystem = "strict";
+        PrivateDevices = true;
+        ProtectProc = "invisible";
+        ProcSubset = "pid";
+        ProtectKernelTunables = true;
+        ProtectKernelModules = true;
+        ProtectKernelLogs = true;
+        ProtectControlGroups = true;
+        ProtectClock = true;
+        ProtectHostname = true;
+        # keine Sonderrechte, keine neuen Namespaces, nur nötige Systemaufrufe
+        CapabilityBoundingSet = "";
+        AmbientCapabilities = "";
+        RestrictNamespaces = true;
+        RestrictRealtime = true;
+        RestrictSUIDSGID = true;
+        LockPersonality = true;
+        MemoryDenyWriteExecute = true;
+        RemoveIPC = true;
+        SystemCallArchitectures = "native";
+        SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+        # Netzwerk: Unix-Socket (MariaDB) und IP nur für den Webserver
+        RestrictAddressFamilies = [ "AF_UNIX" "AF_INET" "AF_INET6" ];
+      } // lib.optionalAttrs localOnly {
+        IPAddressAllow = "localhost";
+        IPAddressDeny = "any";
+      });
     };
   };
 }

@@ -38,6 +38,8 @@ Hinweise:
 |---|---|---|
 | `services.timetrack.port` | `54321` | Port |
 | `services.timetrack.listenAddress` | `"127.0.0.1"` | nur lokal erreichbar |
+| `services.timetrack.allowedHosts` | `[ ]` | weitere Hostnamen für die Weboberfläche (localhost ist immer erlaubt) |
+| `services.timetrack.hardening` | `true` | strenge systemd-Sandbox (nur zur Fehlersuche abschalten) |
 | `services.timetrack.holidayState` | `"NI"` | Bundesland für automatische Feiertage |
 | `services.timetrack.database.createLocally` | `true` | MariaDB automatisch einrichten |
 | `services.timetrack.database.name` | `"timetrack"` | Datenbankname |
@@ -110,6 +112,25 @@ und im Excel-Export.
 - Feiertage werden pro Jahr einmalig automatisch als NF eingetragen. Sie lassen sich
   löschen oder ändern, und über „Feiertage“ auf der Jahresseite erneut eintragen.
 - Arbeit über Mitternacht wird nicht unterstützt (jeder Tag wird für sich gerechnet).
+
+## Sicherheit
+
+- **Nur localhost:** Der Webserver lauscht auf 127.0.0.1. Anfragen mit anderem Host-Header
+  werden abgewiesen (Schutz vor DNS-Rebinding).
+- **Fremde Webseiten** können die API nicht benutzen: Anfragen mit fremdem `Origin` oder
+  `Sec-Fetch-Site` werden abgewiesen, ändernde Anfragen nur als JSON angenommen (CSRF-Schutz).
+  Kommandozeilen-Clients wie waytimetrack oder curl funktionieren weiter.
+- **Browser-Schutz:** Strenge Content-Security-Policy (keine Inline-Skripte), Einbetten in
+  fremde Seiten verboten, alle Daten werden beim Anzeigen HTML-maskiert.
+- **Excel-Export:** Kommentare werden immer als Text geschrieben, nie als Formel oder Link.
+- **Grenzen:** Anfragen höchstens 20 MB; Datensicherungen werden auf Typen und Längen geprüft.
+- **Dienst:** Läuft als eigener Benutzer `timetrack` in einer strengen systemd-Sandbox
+  (schreibgeschütztes Dateisystem, keine Sonderrechte, nur localhost-Netzwerk).
+- **MariaDB:** Lauscht nur auf 127.0.0.1; zusätzlich verwirft systemd alle IP-Pakete, die
+  nicht von/zu localhost gehen. timetrack selbst verbindet sich über den Unix-Socket.
+- **Lieferkette:** In der `configuration.nix` ein Release-Tag mit Prüfsumme festschreiben:
+  `fetchTarball { url = ".../archive/refs/tags/v1.0.0.tar.gz"; sha256 = "..."; }`
+  (Prüfsumme mit `nix-prefetch-url --unpack <url>`), vor jedem Update die Änderungen ansehen.
 
 ## Update einer bestehenden Installation
 
